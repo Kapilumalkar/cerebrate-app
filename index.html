@@ -331,6 +331,7 @@ canvas{width:100%!important}
   <div class="tab-content" id="tab-portfolio">
     <div class="section-head">
       <div class="section-title" style="flex:1">Open Positions</div>
+      <button onclick="refreshPricesManual()" style="background:var(--sapphire-dim);color:var(--sapphire);border:1px solid rgba(78,146,236,0.3);border-radius:6px;padding:6px 14px;font-family:'JetBrains Mono',monospace;font-size:0.62rem;letter-spacing:0.08em;text-transform:uppercase;cursor:pointer;" id="refreshPriceBtn">↻ Refresh Prices</button>
     </div>
     <div class="portfolio-wrap">
       <table class="ptable">
@@ -719,11 +720,12 @@ Return this exact JSON structure:
 }
 
 Rules:
-- Only set relevant:true if this is genuinely market-moving (geopolitical, macro, central bank, major corporate, commodity)
+- Only set relevant:true if this is genuinely market-moving at a macro or sector level (geopolitical events, central bank policy, energy supply, major trade, military conflict, systemic economic data). Do NOT set relevant:true for single-company product news, medical research, sports, entertainment, or local events.
 - probability is your assessed probability the directional call resolves correctly within 5 trading days
-- instruments: 3-5 specific ETFs or major stocks that are directly affected. Use real tickers only (XLE, GLD, QQQ, SPY, XOM, LMT etc)
-- cascade: always include 3 steps minimum, distance 3+ should be the non-obvious institutional insight
-- kellySize: suggested Half-Kelly position size as % of portfolio given the probability
+- instruments: 3-5 specific ETFs or major stocks directly affected. Use real tickers only (XLE, GLD, QQQ, SPY, XOM, LMT etc)
+- cascade: always include 3 steps minimum, distance 3+ should be non-obvious institutional insight
+- kellySize: suggested Half-Kelly position size as % of portfolio
+- sourceQuality: TIER1 = major financial/news outlets (FT, Bloomberg, Reuters, WSJ, BBC, Guardian, CNBC). TIER2 = regional or specialist outlets. TIER3 = blogs, obscure sites, medical/scientific journals, niche publications. Medical research = always TIER3.
 - Keep narrative in plain English, no jargon`;
 
   const response = await fetch(proxyUrl, {
@@ -762,9 +764,48 @@ async function fetchPrice(ticker) {
     const data = await response.json();
     return data.price || null;
   } catch(e) {
-    // Return a simulated price for POC if price fetch fails
     return null;
   }
+}
+
+// ── REFRESH ALL OPEN POSITION PRICES ──
+async function refreshAllPrices() {
+  const positions = STATE.portfolio.positions.filter(p => p.status === 'open');
+  if (positions.length === 0) return;
+
+  // Get unique tickers
+  const tickers = [...new Set(positions.map(p => p.ticker))];
+  let updated = 0;
+
+  for (const ticker of tickers) {
+    try {
+      const price = await fetchPrice(ticker);
+      if (price && price > 0) {
+        // Update all positions with this ticker
+        for (const pos of positions) {
+          if (pos.ticker === ticker) {
+            // On first price fetch, also update entry price so P&L is realistic
+            if (pos.entryPrice === 100 && pos.dayCount === 0) {
+              pos.entryPrice = price;
+              pos.shares = pos.size / price;
+            }
+            pos.currentPrice = price;
+            updated++;
+          }
+        }
+      }
+    } catch(e) {
+      // Silent fail — price unavailable
+    }
+  }
+
+  if (updated > 0) {
+    saveState();
+    renderPortfolio();
+    renderPortfolioBar();
+    renderBenchmarkChart();
+  }
+  return updated;
 }
 
 // ── KELLY CALCULATION ──
@@ -780,10 +821,24 @@ function executeTrade(signal, instrument) {
   const portfolio = STATE.portfolio;
   const config = STATE.config;
 
-  // Check if already holding this ticker
+  // FIX 1: Never trade TIER3 sources — not reliable enough for portfolio action
+  if (signal.sourceQuality === 'TIER3') return false;
+
+  // FIX 1: Never trade if Kelly is too low — signal not strong enough
+  if ((signal.kellySize || 0) < 3) return false;
+
+  // FIX 2: Never trade if we already hold this ticker today (deduplication)
   if (portfolio.positions.find(p => p.ticker === instrument.ticker && p.status === 'open')) {
     return false;
   }
+
+  // FIX 2: Never trade if this ticker was already traded today from any signal
+  const today = new Date().toDateString();
+  const tradedToday = portfolio.history.find(p =>
+    p.ticker === instrument.ticker &&
+    new Date(p.entryDate).toDateString() === today
+  );
+  if (tradedToday) return false;
 
   // Calculate position size
   const kellyPct = Math.min(halfKelly(signal.probability), config.maxPosition) / 100;
@@ -797,11 +852,9 @@ function executeTrade(signal, instrument) {
     totalValue * (config.maxDeployed / 100) - getDeployedAmount()
   );
 
-  if (positionSize < 500) return false; // Minimum position
+  if (positionSize < 500) return false;
 
-  // Use simulated entry price (100 as base, will update with real prices)
-  const entryPrice = 100;
-
+  const entryPrice = 100; // Will be updated by price fetch after entry
   const position = {
     id: Date.now(),
     ticker: instrument.ticker,
@@ -816,6 +869,8 @@ function executeTrade(signal, instrument) {
     status: 'open',
     thesis: signal.eventTitle,
     probability: signal.probability,
+    sourceQuality: signal.sourceQuality,
+    kellySize: signal.kellySize,
     signalId: signal.timestamp,
     reason: instrument.reason
   };
@@ -963,7 +1018,7 @@ async function runAnalysis(isOfficial) {
   }
 
   try {
-    addLog('Fetching headlines from NewsAPI...', 'active');
+    addLog('Fetching headlines from GNews...', 'active');
     progressBar.style.width = '10%';
 
     const headlines = await fetchHeadlines();
@@ -1044,6 +1099,13 @@ async function runAnalysis(isOfficial) {
       }
 
       addLog(`Executed ${newTrades} new trades`, 'ok');
+
+      // FIX 3: Fetch real prices for all open positions
+      if (STATE.portfolio.positions.filter(p => p.status === 'open').length > 0) {
+        addLog('Fetching live prices for open positions...', 'active');
+        const pricesUpdated = await refreshAllPrices();
+        addLog(`Updated prices for ${pricesUpdated || 0} positions`, 'ok');
+      }
       STATE.lastRun = new Date().toISOString();
       document.getElementById('lastRunTime').textContent =
         new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour12: false });
@@ -1442,11 +1504,24 @@ function showToast(msg, type = 'info') {
   setTimeout(() => toast.classList.remove('show'), 4000);
 }
 
+async function refreshPricesManual() {
+  const btn = document.getElementById('refreshPriceBtn');
+  if (btn) { btn.textContent = '↻ Refreshing...'; btn.disabled = true; }
+  const updated = await refreshAllPrices();
+  if (btn) { btn.textContent = '↻ Refresh Prices'; btn.disabled = false; }
+  showToast(updated > 0 ? `Updated ${updated} position prices` : 'No prices updated — Yahoo Finance may be unavailable', updated > 0 ? 'success' : 'info');
+}
+
 // ── INIT ──
 loadState();
 document.getElementById('lastRunTime').textContent = STATE.lastRun
   ? new Date(STATE.lastRun).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour12: false })
   : 'Never';
+
+// Auto-refresh prices on load if we have open positions
+if (STATE.portfolio.positions.filter(p => p.status === 'open').length > 0 && STATE.config.proxyUrl) {
+  setTimeout(() => refreshAllPrices(), 1500);
+}
 </script>
 </body>
 </html>
