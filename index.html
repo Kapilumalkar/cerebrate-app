@@ -722,7 +722,7 @@ Return this exact JSON structure:
 Rules:
 - Only set relevant:true if this is genuinely market-moving at a macro or sector level (geopolitical events, central bank policy, energy supply, major trade, military conflict, systemic economic data). Do NOT set relevant:true for single-company product news, medical research, sports, entertainment, or local events.
 - probability is your assessed probability the directional call resolves correctly within 5 trading days
-- instruments: 3-5 specific ETFs or major stocks directly affected. Use real tickers only (XLE, GLD, QQQ, SPY, XOM, LMT etc)
+- instruments: 3-5 specific ETFs or major stocks directly affected. Use real tickers only. NEVER suggest VIX, DXY, MOVE, or any non-tradeable index as an instrument. For volatility exposure use VIXY or UVXY. For USD exposure use UUP. For oil use USO or XLE, not 'crude' or 'WTI'.
 - cascade: always include 3 steps minimum, distance 3+ should be non-obvious institutional insight
 - kellySize: suggested Half-Kelly position size as % of portfolio
 - sourceQuality: TIER1 = major financial/news outlets (FT, Bloomberg, Reuters, WSJ, BBC, Guardian, CNBC). TIER2 = regional or specialist outlets. TIER3 = blogs, obscure sites, medical/scientific journals, niche publications. Medical research = always TIER3.
@@ -817,9 +817,21 @@ function halfKelly(probability, winLossRatio = 2) {
 }
 
 // ── EXECUTE TRADE ──
+
+// Instruments that cannot be directly traded — blocked list
+const BLOCKED_INSTRUMENTS = ['VIX', 'DXY', 'MOVE', 'SKEW'];
+// Replacement map for non-tradeable instruments
+const INSTRUMENT_REPLACEMENTS = {
+  'VIX': 'VIXY',   // ProShares VIX Short-Term Futures ETF
+  'DXY': 'UUP',    // Invesco DB USD Bullish Fund
+};
+
 function executeTrade(signal, instrument) {
   const portfolio = STATE.portfolio;
   const config = STATE.config;
+
+  // Block non-tradeable instruments
+  if (BLOCKED_INSTRUMENTS.includes(instrument.ticker.toUpperCase())) return false;
 
   // FIX A: Hard block on TIER3 — no exceptions regardless of probability or Kelly
   if (!signal.sourceQuality || signal.sourceQuality === 'TIER3') return false;
@@ -1096,6 +1108,7 @@ async function runAnalysis(isOfficial) {
             if (instr.direction !== 'watch' && instr.probability >= config.signalThreshold) {
               const traded = executeTrade(signal, instr);
               if (traded) {
+                signal.traded = true; // Mark signal as actually traded
                 newTrades++;
                 // Add to calibration calls
                 STATE.calls.push({
@@ -1214,7 +1227,7 @@ function renderSignals() {
             <span class="sc-tag tag-regime">${sig.regime || 'Neutral'}</span>
             <span class="sc-tag tag-dist">Chain D${sig.cascadeDistance || 1}</span>
             ${txHtml}
-            ${isHigh && sig.isOfficial ? '<span class="sc-tag tag-action">TRADED</span>' : ''}
+            ${isHigh && sig.isOfficial && sig.traded ? '<span class="sc-tag tag-action">TRADED</span>' : ''}
             ${!sig.isOfficial ? '<span class="sc-tag tag-queued">Monitor Only</span>' : ''}
           </div>
         </div>
