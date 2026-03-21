@@ -1,8 +1,8 @@
-# Cerebrate — Claude Code Context
+# Cerebrant — Claude Code Context
 
 ## What This Repository Is
-Cerebrate is a systematic market intelligence platform.
-This repository (cerebrate-app) is the LIVE POC — it runs
+Cerebrant is a systematic market intelligence platform.
+This repository (cerebrant/cerebrant-app) is the LIVE POC — it runs
 daily at 9:45 AM EST generating real predictions that form
 the verified track record. It must never be broken.
 
